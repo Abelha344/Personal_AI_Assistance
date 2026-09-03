@@ -128,7 +128,7 @@ function addMessage(role, text) {
   div.innerHTML = `
     <div class="message-avatar">${role === "user" ? "You" : "Ez"}</div>
     <div>
-      <div class="message-body">${escapeHtml(text)}</div>
+      <div class="message-body">${formatMessageHtml(text)}</div>
       <div class="message-time">${formatTime()}</div>
     </div>`;
   messagesEl.appendChild(div);
@@ -156,7 +156,21 @@ function removeTyping() {
 function escapeHtml(text) {
   const d = document.createElement("div");
   d.textContent = text;
-  return d.innerHTML.replace(/\n/g, "<br>");
+  return d.innerHTML;
+}
+
+/** Clean dense markdown symbols for readable chat bubbles. */
+function formatMessageHtml(text) {
+  let s = escapeHtml(text || "");
+  s = s.replace(/^#{1,6}\s+/gm, "");
+  s = s.replace(/^\s*[-*_]{3,}\s*$/gm, "");
+  s = s.replace(/\|\s*:?-{3,}:?\s*/g, " ");
+  s = s.replace(/\|/g, " · ");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "$1");
+  s = s.replace(/`([^`]+)`/g, "$1");
+  s = s.replace(/\n/g, "<br>");
+  return s;
 }
 
 // ── Chat ────────────────────────────────────────────────

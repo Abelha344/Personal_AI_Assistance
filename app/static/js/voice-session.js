@@ -18,6 +18,29 @@
   const MAX_UTTERANCE_MS = 20000;
   const GREETING = "I am Ezric, your personal AI assistant. How can I help you today?";
 
+  /** Strip markdown / symbols so TTS does not say "hash hash" or "dash dash". */
+  function plainSpeechText(raw) {
+    if (!raw) return "";
+    return String(raw)
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/^#{1,6}\s*/gm, "")
+      .replace(/^\s*[-*_]{3,}\s*$/gm, " ")
+      .replace(/\|/g, " ")
+      .replace(/:?-{3,}:?/g, " ")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/_([^_]+)_/g, "$1")
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[#>~`|]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
   const SpeechRecognition =
     global.SpeechRecognition || global.webkitSpeechRecognition || null;
 
@@ -314,7 +337,7 @@
         if (this.transcriptEl) {
           const lines = [];
           if (data.query || query) lines.push(`You: ${data.query || query}`);
-          if (data.response) lines.push(`Ezric: ${data.response}`);
+          if (data.response) lines.push(`Ezric: ${plainSpeechText(data.response)}`);
           this.transcriptEl.textContent = lines.join("\n");
         }
         if (!this.active) return;
@@ -535,7 +558,7 @@
         if (this.transcriptEl) {
           const lines = [];
           if (data.query) lines.push(`You: ${data.query}`);
-          if (data.response) lines.push(`Ezric: ${data.response}`);
+          if (data.response) lines.push(`Ezric: ${plainSpeechText(data.response)}`);
           this.transcriptEl.textContent = lines.join("\n");
         }
 
@@ -563,19 +586,20 @@
         return;
       }
 
-      this._setState(STATES.SPEAKING, "Speaking…", "Ezric is speaking — interrupt anytime");
+      const spoken = plainSpeechText(text);
+      this._setState(STATES.SPEAKING, "Speaking…", "Ezric is speaking — tap Stop to end");
       this.bargeHoldStarted = 0;
       this.vadEnabled = true;
 
       // Instant local TTS first (big speed win); edge-tts only as backup
       if ("speechSynthesis" in global) {
         try {
-          await this._speakBrowser(text);
+          await this._speakBrowser(spoken);
         } catch {
-          await this._speakEdge(text);
+          await this._speakEdge(spoken);
         }
       } else {
-        await this._speakEdge(text);
+        await this._speakEdge(spoken);
       }
 
       this._stopTts();

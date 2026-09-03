@@ -91,6 +91,8 @@
   gap: 1.5rem;
   width: 100%;
   max-width: 520px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .voice-aura {
@@ -198,12 +200,17 @@
 
 .voice-transcript {
   min-height: 1.5rem;
+  max-height: min(28vh, 180px);
   max-width: 36rem;
+  width: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   text-align: center;
   font-size: 0.9375rem;
   color: var(--text-muted);
   line-height: 1.55;
   white-space: pre-wrap;
+  padding: 0 0.5rem;
 }
 
 .voice-footer {
@@ -211,6 +218,9 @@
   display: flex;
   justify-content: center;
   padding-bottom: 0.5rem;
+  flex-shrink: 0;
+  z-index: 5;
+  position: relative;
 }
 
 .voice-stop {
@@ -219,8 +229,8 @@
   gap: 0.625rem;
   padding: 0.875rem 1.75rem;
   min-height: 52px;
-  background: rgba(248, 113, 113, 0.12);
-  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.18);
+  border: 1px solid rgba(248, 113, 113, 0.5);
   border-radius: 999px;
   color: #fecaca;
   font-family: var(--font);
@@ -229,6 +239,7 @@
   cursor: pointer;
   transition: all 0.2s;
   -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
 .voice-stop svg {
