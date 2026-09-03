@@ -72,6 +72,9 @@
       this.useBrowserStt = Boolean(SpeechRecognition);
       this.recognition = null;
       this._finalBuffer = "";
+      this._submitTimer = null;
+      this._fakeLevel = 0;
+      this.greeted = false;
 
       this.overlay = document.getElementById("voiceOverlay");
       this.aura = document.getElementById("voiceAura");
@@ -109,6 +112,48 @@
     async start() {
       if (this.active) return;
 
+      this.active = true;
+      this.processing = false;
+      this.vadEnabled = false;
+      this.greeted = false;
+      this._showOverlay(true);
+      this._setState(STATES.LISTENING, "Starting…", "Getting ready…");
+      if (this.transcriptEl) this.transcriptEl.textContent = "";
+
+      // Browser STT conflicts with an open getUserMedia stream in Chrome
+      // (often ends as "network" error → broken session). Only open the mic
+      // when we need MediaRecorder / waveform fallback.
+      if (!this.useBrowserStt) {
+        const ok = await this._openMic();
+        if (!ok) {
+          this.active = false;
+          this._showOverlay(false);
+          return;
+        }
+      } else {
+        this._tick(); // synthetic waveform
+      }
+
+      await this._playGreeting();
+      this.greeted = true;
+
+      if (!this.active) return;
+      // Brief pause so greeting audio is not transcribed as user speech
+      await new Promise((r) => setTimeout(r, 450));
+      if (!this.active) return;
+
+      this.vadEnabled = true;
+      this._setState(
+        STATES.LISTENING,
+        "Listening…",
+        this.useBrowserStt
+          ? "Say something — then pause"
+          : "Say something — Ezric is listening"
+      );
+      this._startListening();
+    }
+
+    async _openMic() {
       try {
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -119,15 +164,8 @@
         });
       } catch {
         this.onError("Microphone access denied");
-        return;
+        return false;
       }
-
-      this.active = true;
-      this.processing = false;
-      this.vadEnabled = false;
-      this._showOverlay(true);
-      this._setState(STATES.LISTENING, "Starting…", "Getting ready…");
-      if (this.transcriptEl) this.transcriptEl.textContent = "";
 
       this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (this.audioCtx.state === "suspended") {
@@ -138,19 +176,7 @@
       this.analyser.fftSize = 2048;
       this.sourceNode.connect(this.analyser);
       this._tick();
-
-      await this._playGreeting();
-
-      if (!this.active) return;
-      this.vadEnabled = true;
-      this._setState(
-        STATES.LISTENING,
-        "Listening…",
-        this.useBrowserStt
-          ? "Say something — English, fast mode"
-          : "Say something — Ezric is listening"
-      );
-      this._startListening();
+      return true;
     }
 
     stop() {
@@ -227,18 +253,49 @@
     }
 
     _startListening() {
-      if (this.useBrowserStt) this._startBrowserRecognition();
-      else this._startRecorder();
+      if (this.useBrowserStt) {
+        this._startBrowserRecognition();
+        return;
+      }
+      // Whisper path needs an open mic
+      if (!this.stream) {
+        this._openMic().then((ok) => {
+          if (ok && this.active) this._startRecorder();
+        });
+        return;
+      }
+      this._startRecorder();
+    }
+
+    _rms() {
+      if (!this.analyser) {
+        // Soft pulse when browser STT has no mic stream
+        const base = this.state === STATES.LISTENING ? 0.025 : 0.015;
+        return Math.min(0.12, (this._fakeLevel || base) + Math.random() * 0.01);
+      }
+      const data = new Uint8Array(this.analyser.fftSize);
+      this.analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / data.length);
     }
 
     _startBrowserRecognition() {
       if (!SpeechRecognition || !this.active || this.processing) return;
       this._stopBrowserRecognition();
       this._finalBuffer = "";
+      if (this._submitTimer) {
+        clearTimeout(this._submitTimer);
+        this._submitTimer = null;
+      }
 
       const recognition = new SpeechRecognition();
       recognition.lang = "en-US";
-      recognition.continuous = true;
+      // One phrase at a time is far more reliable than continuous=true
+      recognition.continuous = false;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
 
@@ -256,11 +313,17 @@
         if (preview && this.caption) {
           this.caption.textContent = `Hearing: ${preview}`;
         }
-        // End of a phrase: submit final chunk
+        this._fakeLevel = preview ? 0.08 : 0.02;
+
         if (finals.trim()) {
-          const text = this._finalBuffer.trim();
-          this._finalBuffer = "";
-          this._submitText(text);
+          // Small debounce so trailing words land before we send
+          if (this._submitTimer) clearTimeout(this._submitTimer);
+          this._submitTimer = setTimeout(() => {
+            this._submitTimer = null;
+            const text = this._finalBuffer.trim();
+            this._finalBuffer = "";
+            if (text) this._submitText(text);
+          }, 350);
         }
       };
 
@@ -269,22 +332,25 @@
         if (event.error === "aborted" || event.error === "no-speech") return;
         if (event.error === "not-allowed") {
           this.onError("Microphone / speech recognition blocked");
+          this._setState(STATES.LISTENING, "Listening…", "Mic blocked — allow microphone");
           return;
         }
-        // Network or other errors: fall back to Whisper path for this session
+        // Do NOT jump to Whisper on first network blip (kills Render free tier).
+        // Restart browser recognition instead.
         if (event.error === "network" || event.error === "service-not-allowed") {
-          this.useBrowserStt = false;
-          this._stopBrowserRecognition();
-          if (this.state === STATES.LISTENING && this.vadEnabled && !this.processing) {
-            this._setState(STATES.LISTENING, "Listening…", "Fallback mode — pause when finished");
-            this._startRecorder();
-          }
+          this._setState(
+            STATES.LISTENING,
+            "Listening…",
+            "Speech service hiccup — try again"
+          );
+          return;
         }
       };
 
       recognition.onend = () => {
         if (!this.active || !this.useBrowserStt) return;
         if (this.processing || this.state !== STATES.LISTENING || !this.vadEnabled) return;
+        // Restart for the next utterance
         try {
           recognition.start();
         } catch { /* already started */ }
@@ -293,13 +359,17 @@
       this.recognition = recognition;
       try {
         recognition.start();
-      } catch {
-        this.useBrowserStt = false;
-        this._startRecorder();
+      } catch (e) {
+        this.onError("Could not start speech recognition");
+        this._setState(STATES.LISTENING, "Listening…", "Try typing in chat instead");
       }
     }
 
     _stopBrowserRecognition() {
+      if (this._submitTimer) {
+        clearTimeout(this._submitTimer);
+        this._submitTimer = null;
+      }
       const rec = this.recognition;
       this.recognition = null;
       if (!rec) return;
@@ -321,32 +391,46 @@
       this._setState(STATES.THINKING, "Processing…", "Ezric is thinking…");
 
       try {
-        // Same RAG / knowledge path as typed chat — memories still apply
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 90000);
         const res = await fetch("/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: query, voice_mode: true }),
+          body: JSON.stringify({
+            message: query,
+            voice_mode: true,
+            already_greeted: Boolean(this.greeted),
+          }),
+          signal: controller.signal,
         });
+        clearTimeout(timer);
+
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           const detail = typeof err.detail === "string" ? err.detail : "Chat failed";
           throw new Error(detail);
         }
         const data = await res.json();
+        if (!data.response) throw new Error("Empty reply from Ezric");
+
         this.onTranscript(data.query || query, data.response);
         if (this.transcriptEl) {
           const lines = [];
           if (data.query || query) lines.push(`You: ${data.query || query}`);
-          if (data.response) lines.push(`Ezric: ${plainSpeechText(data.response)}`);
+          lines.push(`Ezric: ${plainSpeechText(data.response)}`);
           this.transcriptEl.textContent = lines.join("\n");
         }
         if (!this.active) return;
         await this._speak(data.response);
       } catch (e) {
-        this.onError(e.message || "Voice session error");
+        const msg =
+          e?.name === "AbortError"
+            ? "Ezric timed out — try again"
+            : e.message || "Voice session error";
+        this.onError(msg);
         if (this.active) {
           this.vadEnabled = true;
-          this._setState(STATES.LISTENING, "Listening…", "Try again — Ezric is listening");
+          this._setState(STATES.LISTENING, "Listening…", `Try again — ${msg}`);
           this._startListening();
         }
       } finally {
@@ -423,18 +507,6 @@
       } catch { /* ignore */ }
     }
 
-    _rms() {
-      if (!this.analyser) return 0;
-      const data = new Uint8Array(this.analyser.fftSize);
-      this.analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] - 128) / 128;
-        sum += v * v;
-      }
-      return Math.sqrt(sum / data.length);
-    }
-
     _tick() {
       if (!this.active) return;
       const level = this._rms();
@@ -444,7 +516,7 @@
 
       const now = performance.now();
 
-      if (this.state === STATES.SPEAKING && this.vadEnabled) {
+      if (this.state === STATES.SPEAKING && this.vadEnabled && this.analyser) {
         if ((this.ttsAudio || this.utterance) && level > BARGE_IN_THRESHOLD) {
           if (!this.bargeHoldStarted) this.bargeHoldStarted = now;
           else if (now - this.bargeHoldStarted > BARGE_IN_HOLD_MS) {

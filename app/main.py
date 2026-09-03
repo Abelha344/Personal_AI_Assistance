@@ -160,7 +160,13 @@ async def voice_chat(
 
     try:
         result = agent.invoke(
-            {"query": query, "context": "", "response": "", "voice_mode": True}
+            {
+                "query": query,
+                "context": "",
+                "response": "",
+                "voice_mode": True,
+                "already_greeted": True,
+            }
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Ezric ran into an issue. Please try again.") from exc

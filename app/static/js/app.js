@@ -29,7 +29,10 @@ const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
 const voiceSession = new VoiceSession({
   onTranscript: (query, response) => {
     if (query) addMessage("user", query);
-    if (response) addMessage("assistant", response);
+    if (response) {
+      addMessage("assistant", response);
+      ezricHasGreeted = true;
+    }
   },
   onError: (msg) => toast(msg, "error"),
   onStateChange: (state) => {
