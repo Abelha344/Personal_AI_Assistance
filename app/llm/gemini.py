@@ -1,9 +1,12 @@
+import logging
 import time
 
 from google import genai
 from google.genai import errors as genai_errors
 
 from app.config import settings
+
+log = logging.getLogger(__name__)
 
 _client = genai.Client(api_key=settings.google_api_key)
 
@@ -85,16 +88,35 @@ User question:
             except genai_errors.ClientError as exc:
                 last_error = exc
                 message = str(exc)
+                log.warning("Gemini ClientError (model=%s attempt=%d): %s", model, attempt, message)
+
+                # Model not found → try next model immediately
                 if "NOT_FOUND" in message or "no longer available" in message:
                     break
-                if "UNAVAILABLE" in message or "high demand" in message or "503" in message:
-                    time.sleep(1.0 * (attempt + 1))
+
+                # Rate-limited / quota / overloaded / server error → wait and retry
+                if any(k in message for k in (
+                    "UNAVAILABLE", "high demand", "503", "RESOURCE_EXHAUSTED",
+                    "429", "quota", "overloaded", "502", "500",
+                )):
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+
+                # API key / permission errors → no point retrying
+                if any(k in message for k in ("PERMISSION_DENIED", "API_KEY", "401", "403")):
+                    raise
+
+                # Unknown client error → retry once, then raise
+                if attempt < 2:
+                    time.sleep(1.0)
                     continue
                 raise
+
             except Exception as exc:
                 last_error = exc
-                time.sleep(0.8 * (attempt + 1))
+                log.warning("Gemini error (model=%s attempt=%d): %s", model, attempt, exc)
+                time.sleep(1.0 * (attempt + 1))
 
     if last_error:
         raise last_error
-    raise RuntimeError("Gemini returned no response")
+    raise RuntimeError("No response from Ezric")
