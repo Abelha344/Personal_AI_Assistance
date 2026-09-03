@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0b0f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Ezric — Personal AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/voice-session.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <div class="grid-overlay"></div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
+
+  <div class="app">
+    <header class="mobile-header">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="mobile-brand">
+        <span class="mobile-brand-title">Ezric</span>
+        <span class="status-dot mobile-status-dot" id="mobileStatusDot"></span>
+      </div>
+      <button class="icon-btn" id="mobileClearChat" aria-label="Clear chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4h8v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+      </button>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <button class="drawer-close icon-btn" id="drawerClose" aria-label="Close menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Ezric</h1>
+          <p>Voice · Memory · Intelligence</p>
+        </div>
+      </div>
+
+      <div class="status-card" id="statusCard">
+        <span class="status-dot" id="statusDot"></span>
+        <div>
+          <strong id="statusLabel">Checking…</strong>
+          <span id="statusDetail">Connecting to server</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-btn active" data-panel="chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Conversation
+        </button>
+        <button class="nav-btn" data-panel="knowledge">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Knowledge
+        </button>
+      </nav>
+
+      <div class="pipeline">
+        <h3>Pipeline</h3>
+        <ul>
+          <li><span>Voice</span> → STT</li>
+          <li><span>LangGraph</span> → RAG</li>
+          <li><span>Neon</span> → pgvector</li>
+          <li><span>Gemini</span> → TTS</li>
+        </ul>
+      </div>
+
+      <footer class="sidebar-footer">
+        <a href="/docs" target="_blank">API Docs</a>
+      </footer>
+    </aside>
+
+    <main class="main">
+      <!-- Chat panel -->
+      <section class="panel active" id="panel-chat">
+        <header class="main-header">
+          <div>
+            <h2>Conversation</h2>
+            <p>Ask anything — type or hold the mic to speak</p>
+          </div>
+          <button class="btn-ghost" id="clearChat" title="Clear conversation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18M8 6V4h8v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+            Clear
+          </button>
+        </header>
+
+        <div class="messages" id="messages">
+          <div class="welcome">
+            <div class="welcome-orb">
+              <div class="orb-ring"></div>
+              <div class="orb-core"></div>
+            </div>
+            <h3>I am Ezric</h3>
+            <p>Your personal AI assistant. Teach me facts in Knowledge, then ask me anything.</p>
+            <div class="suggestions">
+              <button class="chip" data-prompt="What do you remember about me?">What do you remember?</button>
+              <button class="chip" data-prompt="Summarize my schedule">My schedule</button>
+              <button class="chip" data-prompt="Help me plan my day">Plan my day</button>
+            </div>
+          </div>
+        </div>
+
+        <form class="composer" id="chatForm">
+          <div class="composer-inner">
+            <button type="button" class="mic-btn" id="micBtn" title="Start live voice with Ezric" aria-label="Start live voice">
+              <span class="mic-waves">
+                <span></span><span></span><span></span>
+              </span>
+              <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="22"/>
+              </svg>
+            </button>
+            <textarea id="messageInput" rows="1" placeholder="Message Ezric…" autocomplete="off"></textarea>
+            <button type="submit" class="send-btn is-empty" id="sendBtn" aria-label="Send message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            </button>
+          </div>
+          <p class="composer-hint" id="composerHint">Press Enter to send · Tap mic for live voice with Ezric</p>
+        </form>
+      </section>
+
+      <!-- Knowledge panel -->
+      <section class="panel" id="panel-knowledge">
+        <header class="main-header">
+          <div>
+            <h2>Knowledge Base</h2>
+            <p>Add facts and context — stored in Neon with vector search</p>
+          </div>
+        </header>
+
+        <div class="knowledge-content">
+          <div class="knowledge-card">
+            <label for="docContent">New memory</label>
+            <textarea id="docContent" rows="6" placeholder="e.g. Team standup is every Monday at 9am. I prefer meetings in the afternoon."></textarea>
+            <div class="knowledge-actions">
+              <input type="text" id="docTag" placeholder="Tag (optional)" />
+              <button class="btn-primary" id="saveDoc">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save to memory
+              </button>
+            </div>
+            <p class="knowledge-status" id="knowledgeStatus" aria-live="polite"></p>
+          </div>
+
+          <div class="knowledge-tips">
+            <h4>Tips for better recall</h4>
+            <ul>
+              <li>Write clear, factual statements — one idea per entry works best</li>
+              <li>Include dates, names, and preferences explicitly</li>
+              <li>The assistant retrieves the most relevant memories per question</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="mobile-tabs" aria-label="Main navigation">
+      <button class="mobile-tab active" data-panel="chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat
+      </button>
+      <button class="mobile-tab" data-panel="knowledge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Knowledge
+      </button>
+    </nav>
+  </div>
+
+  <div class="toast-container" id="toasts"></div>
+
+  <div class="voice-overlay" id="voiceOverlay" hidden aria-hidden="true">
+    <div class="voice-overlay-bg"></div>
+    <header class="voice-top">
+      <div class="voice-badge">
+        <span class="voice-badge-dot" id="voiceBadgeDot"></span>
+        <strong>Ezric</strong>
+        <span class="voice-badge-state" id="voiceStateLabel">Listening…</span>
+      </div>
+    </header>
+
+    <div class="voice-stage">
+      <div class="voice-aura" id="voiceAura" data-state="listening">
+        <div class="voice-ring voice-ring-a"></div>
+        <div class="voice-ring voice-ring-b"></div>
+        <div class="voice-ring voice-ring-c"></div>
+        <div class="voice-core" id="voiceCore"></div>
+        <canvas class="voice-wave" id="voiceWave" width="280" height="80" aria-hidden="true"></canvas>
+      </div>
+      <p class="voice-caption" id="voiceCaption">Say something — Ezric is listening</p>
+      <p class="voice-transcript" id="voiceTranscript"></p>
+    </div>
+
+    <footer class="voice-footer">
+      <button type="button" class="voice-stop" id="voiceStopBtn" aria-label="Stop voice session">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        Stop Session
+      </button>
+    </footer>
+  </div>
+
+  <script src="/static/js/voice-session.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
