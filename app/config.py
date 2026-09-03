@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -5,11 +6,15 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(".env")
-ENV_EXAMPLE = Path(".env.example")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Works with local .env OR platform env vars (Render, etc.)
+    model_config = SettingsConfigDict(
+        env_file=".env" if ENV_FILE.exists() else None,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     google_api_key: str
     database_url: str
@@ -31,16 +36,18 @@ class Settings(BaseSettings):
 
 def _settings_help() -> str:
     return (
-        "\nConfiguration required. Create and edit .env:\n\n"
-        "  cp .env.example .env\n\n"
-        "Set these values in .env:\n"
+        "\nConfiguration required.\n\n"
+        "Local: create .env from .env.example and set GOOGLE_API_KEY + DATABASE_URL.\n"
+        "Render: set the same keys under Environment (no .env file needed).\n"
         "  GOOGLE_API_KEY   → https://aistudio.google.com/apikey\n"
-        "  DATABASE_URL     → Neon connection string (enable pgvector, run scripts/init_db.sql)\n"
+        "  DATABASE_URL     → Neon connection string (pgvector + init_db.sql)\n"
     )
 
 
 def load_settings() -> Settings:
-    if not ENV_FILE.exists():
+    has_local_env = ENV_FILE.exists()
+    has_platform_env = bool(os.getenv("GOOGLE_API_KEY") and os.getenv("DATABASE_URL"))
+    if not has_local_env and not has_platform_env:
         print(_settings_help(), file=sys.stderr)
         raise SystemExit(1)
 
