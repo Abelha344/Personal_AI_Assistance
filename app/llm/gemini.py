@@ -53,12 +53,19 @@ CHAT_FORMAT = """
 - Avoid dense symbols. Light bold is OK sparingly; never dump raw formatting for the user to read.
 """
 
-NO_REINTRO = "\n# Session continuity\nYou have already introduced yourself earlier in this session. Do NOT say 'I am Ezric' or reintroduce yourself again under any circumstances. Just answer naturally.\n"
+NO_REINTRO = (
+    "\n# Session continuity\n"
+    "You have already introduced yourself earlier in this session. "
+    "Do NOT say 'I am Ezric' or reintroduce yourself again under any circumstances. "
+    "Just answer naturally.\n"
+)
 
+# Stable aliases that work for current Google AI Studio keys
 FALLBACK_MODELS = (
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview",
     "gemini-3.6-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
 )
 
 
@@ -70,7 +77,13 @@ def _candidate_models() -> list[str]:
     return models
 
 
-def generate_response(query: str, context: str, *, voice_mode: bool = False, already_greeted: bool = False) -> str:
+def generate_response(
+    query: str,
+    context: str,
+    *,
+    voice_mode: bool = False,
+    already_greeted: bool = False,
+) -> str:
     prompt = f"""Context:
 {context or "No relevant context found."}
 
@@ -84,10 +97,11 @@ User question:
         system += CHAT_FORMAT
     if already_greeted:
         system += NO_REINTRO
+
     last_error: Exception | None = None
 
     for model in _candidate_models():
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = _client.models.generate_content(
                     model=model,
@@ -99,39 +113,59 @@ User question:
                 )
                 text = getattr(response, "text", None)
                 if text:
+                    log.info("Gemini ok model=%s", model)
                     return text
                 raise RuntimeError("Empty response")
             except genai_errors.ClientError as exc:
                 last_error = exc
                 message = str(exc)
-                log.warning("Gemini ClientError (model=%s attempt=%d): %s", model, attempt, message)
+                log.warning(
+                    "Gemini ClientError (model=%s attempt=%d): %s",
+                    model,
+                    attempt,
+                    message[:300],
+                )
 
-                # Model not found → try next model immediately
+                # Dead model → try next candidate immediately
                 if "NOT_FOUND" in message or "no longer available" in message:
                     break
 
-                # Rate-limited / quota / overloaded / server error → wait and retry
-                if any(k in message for k in (
-                    "UNAVAILABLE", "high demand", "503", "RESOURCE_EXHAUSTED",
-                    "429", "quota", "overloaded", "502", "500",
-                )):
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
+                # Quota / rate limit → short wait, then try next model
+                if any(
+                    k in message
+                    for k in (
+                        "RESOURCE_EXHAUSTED",
+                        "429",
+                        "quota",
+                        "UNAVAILABLE",
+                        "high demand",
+                        "503",
+                        "overloaded",
+                        "502",
+                        "500",
+                    )
+                ):
+                    time.sleep(0.8 * (attempt + 1))
+                    if attempt == 0:
+                        continue
+                    break  # move to next model
 
-                # API key / permission errors → no point retrying
                 if any(k in message for k in ("PERMISSION_DENIED", "API_KEY", "401", "403")):
                     raise
 
-                # Unknown client error → retry once, then raise
-                if attempt < 2:
-                    time.sleep(1.0)
+                if attempt == 0:
+                    time.sleep(0.6)
                     continue
-                raise
-
+                break
             except Exception as exc:
                 last_error = exc
-                log.warning("Gemini error (model=%s attempt=%d): %s", model, attempt, exc)
-                time.sleep(1.0 * (attempt + 1))
+                log.warning(
+                    "Gemini error (model=%s attempt=%d): %s",
+                    model,
+                    attempt,
+                    exc,
+                )
+                time.sleep(0.6 * (attempt + 1))
 
     if last_error:
         raise last_error

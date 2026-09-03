@@ -116,12 +116,21 @@ def chat(request: ChatRequest) -> ChatResponse:
         detail = str(exc)
         if any(k in detail for k in ("API key", "PERMISSION_DENIED", "401", "403")):
             detail = "Ezric can't connect right now. Please try again later."
+        elif any(
+            k in detail
+            for k in (
+                "RESOURCE_EXHAUSTED",
+                "429",
+                "quota",
+                "UNAVAILABLE",
+                "high demand",
+                "503",
+                "overloaded",
+            )
+        ):
+            detail = "Ezric is a little busy. Please try again in a few seconds."
         elif any(k in detail for k in ("NOT_FOUND", "no longer available")):
             detail = "Ezric is temporarily unavailable. Please try again shortly."
-        elif any(k in detail for k in (
-            "UNAVAILABLE", "high demand", "503", "RESOURCE_EXHAUSTED", "429", "quota", "overloaded"
-        )):
-            detail = "Ezric is a little busy. Please try again in a few seconds."
         else:
             detail = "Ezric ran into an issue. Please try again."
         raise HTTPException(status_code=502, detail=detail) from exc
