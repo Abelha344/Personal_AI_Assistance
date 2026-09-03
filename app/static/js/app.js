@@ -22,6 +22,7 @@ const mobileClearChat = $("#mobileClearChat");
 
 let isLoading = false;
 let welcomeRemoved = false;
+let ezricHasGreeted = false;  // track whether Ezric already introduced itself
 
 const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
 
@@ -184,7 +185,7 @@ async function sendMessage(text) {
     const res = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: msg }),
+      body: JSON.stringify({ message: msg, already_greeted: ezricHasGreeted }),
     });
 
     removeTyping();
@@ -201,6 +202,7 @@ async function sendMessage(text) {
 
     const data = await res.json();
     addMessage("assistant", data.response);
+    ezricHasGreeted = true;  // Ezric has now replied at least once
   } catch (e) {
     removeTyping();
     addMessage("assistant", "Could not reach the server. Make sure it is running.");
@@ -322,6 +324,7 @@ function resetChat() {
   if (voiceSession.isActive) voiceSession.stop();
   messagesEl.innerHTML = "";
   welcomeRemoved = false;
+  ezricHasGreeted = false;
   messagesEl.innerHTML = `
     <div class="welcome">
       <div class="welcome-orb"><div class="orb-ring"></div><div class="orb-core"></div></div>

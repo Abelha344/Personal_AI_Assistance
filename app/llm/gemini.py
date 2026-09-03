@@ -60,14 +60,16 @@ def _candidate_models() -> list[str]:
     return models
 
 
-def generate_response(query: str, context: str, *, voice_mode: bool = False) -> str:
+NO_REINTRO = "\n# Session continuity\nYou have already introduced yourself earlier in this session. Do NOT say 'I am Ezric' or reintroduce yourself again under any circumstances. Just answer naturally.\n"
+
+def generate_response(query: str, context: str, *, voice_mode: bool = False, already_greeted: bool = False) -> str:
     prompt = f"""Context:
 {context or "No relevant context found."}
 
 User question:
 {query}"""
 
-    system = SYSTEM_PROMPT + (VOICE_EXTRA if voice_mode else "")
+    system = SYSTEM_PROMPT + (VOICE_EXTRA if voice_mode else "") + (NO_REINTRO if already_greeted else "")
     last_error: Exception | None = None
 
     for model in _candidate_models():

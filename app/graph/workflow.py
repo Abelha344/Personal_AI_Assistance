@@ -26,6 +26,7 @@ def generate(state: AgentState) -> AgentState:
         state["query"],
         state["context"],
         voice_mode=bool(state.get("voice_mode")),
+        already_greeted=bool(state.get("already_greeted")),
     )
     return {**state, "response": response}
 

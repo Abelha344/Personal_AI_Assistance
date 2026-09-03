@@ -6,3 +6,4 @@ class AgentState(TypedDict):
     context: str
     response: str
     voice_mode: bool
+    already_greeted: bool

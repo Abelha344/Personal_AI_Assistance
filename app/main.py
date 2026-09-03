@@ -42,6 +42,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 class ChatRequest(BaseModel):
     message: str
     voice_mode: bool = False
+    already_greeted: bool = False  # True after Ezric has already introduced itself
 
 
 class ChatResponse(BaseModel):
@@ -108,6 +109,7 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "context": "",
                 "response": "",
                 "voice_mode": request.voice_mode,
+                "already_greeted": request.already_greeted,
             }
         )
     except Exception as exc:
