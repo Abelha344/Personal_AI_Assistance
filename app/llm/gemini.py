@@ -37,6 +37,9 @@ VOICE_EXTRA = """
 - Answer in 1–3 short spoken sentences. Prefer under ~40 words unless the user asks for detail.
 - No markdown, bullets, tables, or code fences — plain speech only.
 - Still use knowledge-base context accurately when it is relevant.
+- IMPORTANT: You have already introduced yourself at the start of this voice session.
+  Do NOT say "I am Ezric" or give any introduction again, even if the user greets you.
+  Just respond naturally to what they said.
 """
 
 FALLBACK_MODELS = (
