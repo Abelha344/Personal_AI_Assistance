@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     google_api_key: str
     database_url: str
 
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
     gemini_embedding_model: str = "gemini-embedding-001"
     whisper_model: str = "tiny"
     whisper_language: str = "en"
