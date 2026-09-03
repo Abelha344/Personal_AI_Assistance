@@ -1,7 +1,7 @@
 /**
  * Continuous live voice session (ChatGPT Voice Mode style).
- * Client keeps the mic open with VAD; each utterance is POSTed to /voice,
- * then Ezric replies via /tts. Barge-in stops TTS when the user speaks again.
+ * Mic stays open with VAD; each utterance → POST /voice → /tts reply.
+ * Barge-in stops TTS when the user speaks again.
  */
 (function (global) {
   const STATES = {
@@ -10,11 +10,13 @@
     SPEAKING: "speaking",
   };
 
-  const SPEECH_THRESHOLD = 0.025;
-  const SILENCE_MS = 900;
-  const MIN_SPEECH_MS = 450;
-  const BARGE_IN_THRESHOLD = 0.045;
-  const BARGE_IN_HOLD_MS = 220;
+  // Tuned for laptop mics; echoCancellation helps but levels stay low
+  const SPEECH_THRESHOLD = 0.012;
+  const SILENCE_MS = 1100;
+  const MIN_SPEECH_MS = 400;
+  const BARGE_IN_THRESHOLD = 0.05;
+  const BARGE_IN_HOLD_MS = 280;
+  const MAX_UTTERANCE_MS = 20000;
 
   class VoiceSession {
     constructor(options = {}) {
@@ -38,6 +40,8 @@
       this.ttsAudio = null;
       this.bargeHoldStarted = 0;
       this.level = 0;
+      this.vadEnabled = false;
+      this._recorderGeneration = 0;
 
       this.overlay = document.getElementById("voiceOverlay");
       this.aura = document.getElementById("voiceAura");
@@ -50,9 +54,22 @@
       this.waveCtx = this.waveCanvas?.getContext("2d") || null;
 
       this.stopBtn?.addEventListener("click", () => this.stop());
+      this.aura?.addEventListener("click", () => this._forceSendIfListening());
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape" && this.active) this.stop();
       });
+    }
+
+    _forceSendIfListening() {
+      if (
+        this.active &&
+        this.state === STATES.LISTENING &&
+        this.vadEnabled &&
+        this.mediaRecorder?.state === "recording" &&
+        this.hadSpeech
+      ) {
+        this._stopRecorder(true);
+      }
     }
 
     get isActive() {
@@ -77,43 +94,37 @@
 
       this.active = true;
       this.processing = false;
+      this.vadEnabled = false;
       this._showOverlay(true);
-      this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
-      this.transcriptEl.textContent = "";
+      this._setState(STATES.LISTENING, "Starting…", "Getting ready…");
+      if (this.transcriptEl) this.transcriptEl.textContent = "";
 
       this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (this.audioCtx.state === "suspended") {
+        await this.audioCtx.resume().catch(() => {});
+      }
       this.sourceNode = this.audioCtx.createMediaStreamSource(this.stream);
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 2048;
       this.sourceNode.connect(this.analyser);
-
-      this._startRecorder();
       this._tick();
 
-      // Unlock audio + short greeting inside the user gesture chain
-      try {
-        const greet = new Audio("/greeting");
-        this._setState(STATES.SPEAKING, "Speaking…", "Ezric is introducing…");
-        await greet.play();
-        await new Promise((resolve) => {
-          greet.onended = resolve;
-          greet.onerror = resolve;
-        });
-      } catch {
-        /* autoplay / network — continue listening */
-      }
+      // Intro first — do NOT record during greeting (avoids echo / stuck VAD)
+      await this._playGreeting();
 
-      if (this.active) {
-        this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
-      }
+      if (!this.active) return;
+      this.vadEnabled = true;
+      this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
+      this._startRecorder();
     }
 
     stop() {
       this.active = false;
       this.processing = false;
+      this.vadEnabled = false;
       this._cancelRaf();
       this._stopTts();
-      this._stopRecorder();
+      this._stopRecorder(false);
 
       if (this.stream) {
         this.stream.getTracks().forEach((t) => t.stop());
@@ -131,6 +142,24 @@
       this._showOverlay(false);
       this._setState(STATES.LISTENING, "Listening…", "");
       this.onStateChange(null);
+    }
+
+    async _playGreeting() {
+      this._setState(STATES.SPEAKING, "Speaking…", "Ezric is introducing…");
+      try {
+        const greet = new Audio("/greeting");
+        this.ttsAudio = greet;
+        await greet.play();
+        await new Promise((resolve) => {
+          const done = () => resolve();
+          greet.onended = done;
+          greet.onerror = done;
+        });
+      } catch {
+        /* continue without intro audio */
+      } finally {
+        if (this.ttsAudio) this.ttsAudio = null;
+      }
     }
 
     _showOverlay(show) {
@@ -156,45 +185,73 @@
     }
 
     _startRecorder() {
-      if (!this.stream || !this.active) return;
+      if (!this.stream || !this.active || this.processing) return;
+
+      // Ensure previous recorder is fully stopped
+      this._stopRecorder(false);
+
       this.chunks = [];
       this.hadSpeech = false;
       this.speechStartedAt = 0;
       this.silenceStartedAt = 0;
+      const generation = ++this._recorderGeneration;
 
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
-        : "audio/webm";
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
 
+      let recorder;
       try {
-        this.mediaRecorder = new MediaRecorder(this.stream, { mimeType: mime });
+        recorder = mime
+          ? new MediaRecorder(this.stream, { mimeType: mime })
+          : new MediaRecorder(this.stream);
       } catch {
-        this.mediaRecorder = new MediaRecorder(this.stream);
+        recorder = new MediaRecorder(this.stream);
       }
 
-      this.mediaRecorder.ondataavailable = (e) => {
+      this.mediaRecorder = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (generation !== this._recorderGeneration) return;
         if (e.data && e.data.size > 0) this.chunks.push(e.data);
       };
 
-      this.mediaRecorder.onstop = () => {
+      recorder.onstop = () => {
+        if (generation !== this._recorderGeneration) return;
         if (!this.active || this.processing) return;
-        const blob = new Blob(this.chunks, { type: this.mediaRecorder.mimeType || "audio/webm" });
+
+        const mimeType = recorder.mimeType || "audio/webm";
+        const blob = new Blob(this.chunks, { type: mimeType });
         this.chunks = [];
-        if (blob.size < 1200 || !this.hadSpeech) {
-          if (this.active && this.state === STATES.LISTENING) this._startRecorder();
+
+        if (blob.size < 800 || !this.hadSpeech) {
+          if (this.active && this.state === STATES.LISTENING && this.vadEnabled) {
+            this._startRecorder();
+          }
           return;
         }
+
         this._handleUtterance(blob);
       };
 
-      this.mediaRecorder.start(200);
+      try {
+        recorder.start(250);
+      } catch (e) {
+        this.onError("Could not start microphone recording");
+      }
     }
 
-    _stopRecorder() {
-      if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-        try { this.mediaRecorder.stop(); } catch { /* ignore */ }
-      }
+    _stopRecorder(triggerUtterance = true) {
+      const recorder = this.mediaRecorder;
       this.mediaRecorder = null;
+      if (!recorder) return;
+      if (recorder.state === "inactive") return;
+      try {
+        if (!triggerUtterance) this._recorderGeneration += 1;
+        recorder.stop();
+      } catch { /* ignore */ }
     }
 
     _rms() {
@@ -218,8 +275,9 @@
 
       const now = performance.now();
 
-      if (this.state === STATES.SPEAKING) {
-        if (level > BARGE_IN_THRESHOLD) {
+      if (this.state === STATES.SPEAKING && this.vadEnabled) {
+        // Barge-in only after intro finished (vadEnabled true) and while TTS plays
+        if (this.ttsAudio && level > BARGE_IN_THRESHOLD) {
           if (!this.bargeHoldStarted) this.bargeHoldStarted = now;
           else if (now - this.bargeHoldStarted > BARGE_IN_HOLD_MS) {
             this._stopTts();
@@ -230,19 +288,28 @@
         } else {
           this.bargeHoldStarted = 0;
         }
-      } else if (this.state === STATES.LISTENING && this.mediaRecorder?.state === "recording") {
+      } else if (
+        this.state === STATES.LISTENING &&
+        this.vadEnabled &&
+        this.mediaRecorder?.state === "recording"
+      ) {
         if (level > SPEECH_THRESHOLD) {
           if (!this.hadSpeech) {
             this.hadSpeech = true;
             this.speechStartedAt = now;
+            if (this.caption) this.caption.textContent = "Hearing you…";
           }
           this.silenceStartedAt = 0;
+          // Safety: force send if user talks too long
+          if (now - this.speechStartedAt >= MAX_UTTERANCE_MS) {
+            this._stopRecorder(true);
+          }
         } else if (this.hadSpeech) {
           if (!this.silenceStartedAt) this.silenceStartedAt = now;
           const spokeLongEnough = now - this.speechStartedAt >= MIN_SPEECH_MS;
           const silentLongEnough = now - this.silenceStartedAt >= SILENCE_MS;
           if (spokeLongEnough && silentLongEnough) {
-            this._stopRecorder();
+            this._stopRecorder(true);
           }
         }
       }
@@ -258,7 +325,7 @@
     _scaleCore(level) {
       if (!this.core) return;
       if (this.state === STATES.LISTENING) {
-        const scale = 1 + Math.min(level * 4, 0.35);
+        const scale = 1 + Math.min(level * 5, 0.4);
         this.core.style.transform = `scale(${scale})`;
       } else if (this.state === STATES.SPEAKING) {
         const scale = 1 + Math.min(level * 2.5, 0.28);
@@ -302,7 +369,8 @@
     async _handleUtterance(blob) {
       if (!this.active) return;
       this.processing = true;
-      this._setState(STATES.THINKING, "Processing…", "Ezric is thinking…");
+      this.vadEnabled = false;
+      this._setState(STATES.THINKING, "Processing…", "Transcribing (English)…");
 
       try {
         const form = new FormData();
@@ -312,13 +380,18 @@
         const res = await fetch("/voice", { method: "POST", body: form });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          throw new Error(err.detail || "Voice request failed");
+          const detail = typeof err.detail === "string" ? err.detail : "Voice request failed";
+          throw new Error(detail);
         }
 
         const data = await res.json();
+        this._setState(STATES.THINKING, "Processing…", "Ezric is thinking…");
         this.onTranscript(data.query, data.response);
         if (this.transcriptEl) {
-          this.transcriptEl.textContent = data.query ? `You: ${data.query}` : "";
+          const lines = [];
+          if (data.query) lines.push(`You: ${data.query}`);
+          if (data.response) lines.push(`Ezric: ${data.response}`);
+          this.transcriptEl.textContent = lines.join("\n");
         }
 
         if (!this.active) return;
@@ -326,6 +399,7 @@
       } catch (e) {
         this.onError(e.message || "Voice session error");
         if (this.active) {
+          this.vadEnabled = true;
           this._setState(STATES.LISTENING, "Listening…", "Try again — Ezric is listening");
           this._startRecorder();
         }
@@ -337,6 +411,7 @@
     async _speak(text) {
       if (!this.active || !text) {
         if (this.active) {
+          this.vadEnabled = true;
           this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
           this._startRecorder();
         }
@@ -345,6 +420,7 @@
 
       this._setState(STATES.SPEAKING, "Speaking…", "Ezric is speaking — interrupt anytime");
       this.bargeHoldStarted = 0;
+      this.vadEnabled = true;
 
       try {
         const res = await fetch("/tts", {
@@ -357,22 +433,24 @@
         if (!this.active) return;
 
         const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
-        this.ttsAudio = new Audio(url);
+        const audio = new Audio(url);
+        this.ttsAudio = audio;
         await new Promise((resolve) => {
           const done = () => {
             URL.revokeObjectURL(url);
             resolve();
           };
-          this.ttsAudio.onended = done;
-          this.ttsAudio.onerror = done;
-          this.ttsAudio.play().catch(done);
+          audio.onended = done;
+          audio.onerror = done;
+          audio.play().catch(done);
         });
       } catch {
-        /* fall through to listening */
+        /* fall through */
       }
 
       this._stopTts();
       if (this.active) {
+        this.vadEnabled = true;
         this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
         this._startRecorder();
       }

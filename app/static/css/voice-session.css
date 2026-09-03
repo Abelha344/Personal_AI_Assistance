@@ -190,13 +190,20 @@
   color: var(--text);
 }
 
+.voice-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
 .voice-transcript {
   min-height: 1.5rem;
   max-width: 36rem;
   text-align: center;
   font-size: 0.9375rem;
   color: var(--text-muted);
-  line-height: 1.5;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .voice-footer {

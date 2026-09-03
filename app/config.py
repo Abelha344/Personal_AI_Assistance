@@ -16,7 +16,8 @@ class Settings(BaseSettings):
 
     gemini_model: str = "gemini-2.5-flash"
     gemini_embedding_model: str = "gemini-embedding-001"
-    whisper_model: str = "base"
+    whisper_model: str = "tiny"
+    whisper_language: str = "en"
     top_k: int = 5
 
     @property

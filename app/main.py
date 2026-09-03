@@ -17,6 +17,13 @@ EZRIC_GREETING = "I am Ezric, your personal AI assistant. How can I help you tod
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Preload Whisper so the first live-voice turn is not a long cold start
+    try:
+        from app.voice.stt import warm_up
+
+        warm_up()
+    except Exception:
+        pass
     yield
     vector_store.close()
 
@@ -114,18 +121,36 @@ async def voice_chat(
     audio: UploadFile = File(...),
     return_audio: bool = Form(default=True),
 ):
-    if not audio.content_type or not audio.content_type.startswith("audio/"):
-        raise HTTPException(status_code=400, detail="Expected an audio file")
-
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio file")
 
-    query = transcribe_audio(audio_bytes, filename=audio.filename or "audio.wav")
-    if not query:
-        raise HTTPException(status_code=422, detail="Could not transcribe audio")
+    # Browsers often send webm as application/octet-stream or empty content-type
+    filename = audio.filename or "audio.webm"
+    content_type = (audio.content_type or "").lower()
+    if content_type and not (
+        content_type.startswith("audio/")
+        or content_type in {"application/octet-stream", "video/webm"}
+        or filename.endswith((".webm", ".wav", ".mp3", ".ogg", ".m4a"))
+    ):
+        raise HTTPException(status_code=400, detail="Expected an audio file")
 
-    result = agent.invoke({"query": query, "context": "", "response": ""})
+    try:
+        query = transcribe_audio(audio_bytes, filename=filename)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Transcription failed: {exc}") from exc
+
+    if not query:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not understand audio. Please speak clearly and try again.",
+        )
+
+    try:
+        result = agent.invoke({"query": query, "context": "", "response": ""})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ezric failed to answer: {exc}") from exc
+
     response_text = result["response"]
 
     if return_audio:
