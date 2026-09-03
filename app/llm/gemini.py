@@ -32,6 +32,13 @@ Keep that greeting under 15 words, then be ready for input.
 Do not repeat the full introduction on every message—only on greetings / identity questions / session starts.
 """
 
+VOICE_EXTRA = """
+# Voice mode (spoken aloud)
+- Answer in 1–3 short spoken sentences. Prefer under ~40 words unless the user asks for detail.
+- No markdown, bullets, tables, or code fences — plain speech only.
+- Still use knowledge-base context accurately when it is relevant.
+"""
+
 FALLBACK_MODELS = (
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -47,13 +54,14 @@ def _candidate_models() -> list[str]:
     return models
 
 
-def generate_response(query: str, context: str) -> str:
+def generate_response(query: str, context: str, *, voice_mode: bool = False) -> str:
     prompt = f"""Context:
 {context or "No relevant context found."}
 
 User question:
 {query}"""
 
+    system = SYSTEM_PROMPT + (VOICE_EXTRA if voice_mode else "")
     last_error: Exception | None = None
 
     for model in _candidate_models():
@@ -63,7 +71,7 @@ User question:
                     model=model,
                     contents=prompt,
                     config={
-                        "system_instruction": SYSTEM_PROMPT,
+                        "system_instruction": system,
                         "automatic_function_calling": {"disable": True},
                     },
                 )

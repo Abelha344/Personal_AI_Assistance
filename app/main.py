@@ -41,6 +41,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 class ChatRequest(BaseModel):
     message: str
+    voice_mode: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -101,7 +102,14 @@ async def tts(request: TTSRequest) -> Response:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     try:
-        result = agent.invoke({"query": request.message, "context": "", "response": ""})
+        result = agent.invoke(
+            {
+                "query": request.message,
+                "context": "",
+                "response": "",
+                "voice_mode": request.voice_mode,
+            }
+        )
     except Exception as exc:
         detail = str(exc)
         if "API key" in detail:
@@ -147,7 +155,9 @@ async def voice_chat(
         )
 
     try:
-        result = agent.invoke({"query": query, "context": "", "response": ""})
+        result = agent.invoke(
+            {"query": query, "context": "", "response": "", "voice_mode": True}
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Ezric failed to answer: {exc}") from exc
 

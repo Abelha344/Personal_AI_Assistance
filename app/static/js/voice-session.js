@@ -1,7 +1,7 @@
 /**
- * Continuous live voice session (ChatGPT Voice Mode style).
- * Mic stays open with VAD; each utterance → POST /voice → /tts reply.
- * Barge-in stops TTS when the user speaks again.
+ * Continuous live voice session.
+ * Fast path: browser SpeechRecognition (EN) → POST /chat (RAG/memory) → speechSynthesis.
+ * Fallback: MediaRecorder → POST /voice (Whisper) → /tts when browser STT is unavailable.
  */
 (function (global) {
   const STATES = {
@@ -10,13 +10,16 @@
     SPEAKING: "speaking",
   };
 
-  // Tuned for laptop mics; echoCancellation helps but levels stay low
   const SPEECH_THRESHOLD = 0.012;
-  const SILENCE_MS = 1100;
-  const MIN_SPEECH_MS = 400;
+  const SILENCE_MS = 900;
+  const MIN_SPEECH_MS = 350;
   const BARGE_IN_THRESHOLD = 0.05;
   const BARGE_IN_HOLD_MS = 280;
   const MAX_UTTERANCE_MS = 20000;
+  const GREETING = "I am Ezric, your personal AI assistant. How can I help you today?";
+
+  const SpeechRecognition =
+    global.SpeechRecognition || global.webkitSpeechRecognition || null;
 
   class VoiceSession {
     constructor(options = {}) {
@@ -38,10 +41,14 @@
       this.hadSpeech = false;
       this.processing = false;
       this.ttsAudio = null;
+      this.utterance = null;
       this.bargeHoldStarted = 0;
       this.level = 0;
       this.vadEnabled = false;
       this._recorderGeneration = 0;
+      this.useBrowserStt = Boolean(SpeechRecognition);
+      this.recognition = null;
+      this._finalBuffer = "";
 
       this.overlay = document.getElementById("voiceOverlay");
       this.aura = document.getElementById("voiceAura");
@@ -61,13 +68,13 @@
     }
 
     _forceSendIfListening() {
-      if (
-        this.active &&
-        this.state === STATES.LISTENING &&
-        this.vadEnabled &&
-        this.mediaRecorder?.state === "recording" &&
-        this.hadSpeech
-      ) {
+      if (!this.active || this.state !== STATES.LISTENING || !this.vadEnabled) return;
+      if (this.useBrowserStt) {
+        const text = this._finalBuffer.trim();
+        if (text) this._submitText(text);
+        return;
+      }
+      if (this.mediaRecorder?.state === "recording" && this.hadSpeech) {
         this._stopRecorder(true);
       }
     }
@@ -109,13 +116,18 @@
       this.sourceNode.connect(this.analyser);
       this._tick();
 
-      // Intro first — do NOT record during greeting (avoids echo / stuck VAD)
       await this._playGreeting();
 
       if (!this.active) return;
       this.vadEnabled = true;
-      this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
-      this._startRecorder();
+      this._setState(
+        STATES.LISTENING,
+        "Listening…",
+        this.useBrowserStt
+          ? "Say something — English, fast mode"
+          : "Say something — Ezric is listening"
+      );
+      this._startListening();
     }
 
     stop() {
@@ -124,6 +136,7 @@
       this.vadEnabled = false;
       this._cancelRaf();
       this._stopTts();
+      this._stopBrowserRecognition();
       this._stopRecorder(false);
 
       if (this.stream) {
@@ -146,14 +159,20 @@
 
     async _playGreeting() {
       this._setState(STATES.SPEAKING, "Speaking…", "Ezric is introducing…");
+      // Prefer instant browser TTS for greeting (much faster than /greeting download)
+      if ("speechSynthesis" in global) {
+        try {
+          await this._speakBrowser(GREETING);
+          return;
+        } catch { /* fall through */ }
+      }
       try {
         const greet = new Audio("/greeting");
         this.ttsAudio = greet;
         await greet.play();
         await new Promise((resolve) => {
-          const done = () => resolve();
-          greet.onended = done;
-          greet.onerror = done;
+          greet.onended = () => resolve();
+          greet.onerror = () => resolve();
         });
       } catch {
         /* continue without intro audio */
@@ -184,10 +203,137 @@
       this.onStateChange(state);
     }
 
+    _startListening() {
+      if (this.useBrowserStt) this._startBrowserRecognition();
+      else this._startRecorder();
+    }
+
+    _startBrowserRecognition() {
+      if (!SpeechRecognition || !this.active || this.processing) return;
+      this._stopBrowserRecognition();
+      this._finalBuffer = "";
+
+      const recognition = new SpeechRecognition();
+      recognition.lang = "en-US";
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event) => {
+        if (!this.active || this.processing || this.state !== STATES.LISTENING) return;
+        let interim = "";
+        let finals = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const piece = event.results[i][0]?.transcript || "";
+          if (event.results[i].isFinal) finals += piece;
+          else interim += piece;
+        }
+        if (finals) this._finalBuffer = `${this._finalBuffer} ${finals}`.trim();
+        const preview = (this._finalBuffer || interim).trim();
+        if (preview && this.caption) {
+          this.caption.textContent = `Hearing: ${preview}`;
+        }
+        // End of a phrase: submit final chunk
+        if (finals.trim()) {
+          const text = this._finalBuffer.trim();
+          this._finalBuffer = "";
+          this._submitText(text);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        if (!this.active) return;
+        if (event.error === "aborted" || event.error === "no-speech") return;
+        if (event.error === "not-allowed") {
+          this.onError("Microphone / speech recognition blocked");
+          return;
+        }
+        // Network or other errors: fall back to Whisper path for this session
+        if (event.error === "network" || event.error === "service-not-allowed") {
+          this.useBrowserStt = false;
+          this._stopBrowserRecognition();
+          if (this.state === STATES.LISTENING && this.vadEnabled && !this.processing) {
+            this._setState(STATES.LISTENING, "Listening…", "Fallback mode — pause when finished");
+            this._startRecorder();
+          }
+        }
+      };
+
+      recognition.onend = () => {
+        if (!this.active || !this.useBrowserStt) return;
+        if (this.processing || this.state !== STATES.LISTENING || !this.vadEnabled) return;
+        try {
+          recognition.start();
+        } catch { /* already started */ }
+      };
+
+      this.recognition = recognition;
+      try {
+        recognition.start();
+      } catch {
+        this.useBrowserStt = false;
+        this._startRecorder();
+      }
+    }
+
+    _stopBrowserRecognition() {
+      const rec = this.recognition;
+      this.recognition = null;
+      if (!rec) return;
+      try {
+        rec.onresult = null;
+        rec.onerror = null;
+        rec.onend = null;
+        rec.abort();
+      } catch { /* ignore */ }
+    }
+
+    async _submitText(text) {
+      const query = (text || "").trim();
+      if (!query || !this.active || this.processing) return;
+
+      this.processing = true;
+      this.vadEnabled = false;
+      this._stopBrowserRecognition();
+      this._setState(STATES.THINKING, "Processing…", "Ezric is thinking…");
+
+      try {
+        // Same RAG / knowledge path as typed chat — memories still apply
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: query, voice_mode: true }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          const detail = typeof err.detail === "string" ? err.detail : "Chat failed";
+          throw new Error(detail);
+        }
+        const data = await res.json();
+        this.onTranscript(data.query || query, data.response);
+        if (this.transcriptEl) {
+          const lines = [];
+          if (data.query || query) lines.push(`You: ${data.query || query}`);
+          if (data.response) lines.push(`Ezric: ${data.response}`);
+          this.transcriptEl.textContent = lines.join("\n");
+        }
+        if (!this.active) return;
+        await this._speak(data.response);
+      } catch (e) {
+        this.onError(e.message || "Voice session error");
+        if (this.active) {
+          this.vadEnabled = true;
+          this._setState(STATES.LISTENING, "Listening…", "Try again — Ezric is listening");
+          this._startListening();
+        }
+      } finally {
+        this.processing = false;
+      }
+    }
+
     _startRecorder() {
       if (!this.stream || !this.active || this.processing) return;
 
-      // Ensure previous recorder is fully stopped
       this._stopRecorder(false);
 
       this.chunks = [];
@@ -238,7 +384,7 @@
 
       try {
         recorder.start(250);
-      } catch (e) {
+      } catch {
         this.onError("Could not start microphone recording");
       }
     }
@@ -276,19 +422,19 @@
       const now = performance.now();
 
       if (this.state === STATES.SPEAKING && this.vadEnabled) {
-        // Barge-in only after intro finished (vadEnabled true) and while TTS plays
-        if (this.ttsAudio && level > BARGE_IN_THRESHOLD) {
+        if ((this.ttsAudio || this.utterance) && level > BARGE_IN_THRESHOLD) {
           if (!this.bargeHoldStarted) this.bargeHoldStarted = now;
           else if (now - this.bargeHoldStarted > BARGE_IN_HOLD_MS) {
             this._stopTts();
             this.bargeHoldStarted = 0;
             this._setState(STATES.LISTENING, "Listening…", "I’m listening — go ahead");
-            this._startRecorder();
+            this._startListening();
           }
         } else {
           this.bargeHoldStarted = 0;
         }
       } else if (
+        !this.useBrowserStt &&
         this.state === STATES.LISTENING &&
         this.vadEnabled &&
         this.mediaRecorder?.state === "recording"
@@ -300,7 +446,6 @@
             if (this.caption) this.caption.textContent = "Hearing you…";
           }
           this.silenceStartedAt = 0;
-          // Safety: force send if user talks too long
           if (now - this.speechStartedAt >= MAX_UTTERANCE_MS) {
             this._stopRecorder(true);
           }
@@ -401,7 +546,7 @@
         if (this.active) {
           this.vadEnabled = true;
           this._setState(STATES.LISTENING, "Listening…", "Try again — Ezric is listening");
-          this._startRecorder();
+          this._startListening();
         }
       } finally {
         this.processing = false;
@@ -413,7 +558,7 @@
         if (this.active) {
           this.vadEnabled = true;
           this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
-          this._startRecorder();
+          this._startListening();
         }
         return;
       }
@@ -422,6 +567,63 @@
       this.bargeHoldStarted = 0;
       this.vadEnabled = true;
 
+      // Instant local TTS first (big speed win); edge-tts only as backup
+      if ("speechSynthesis" in global) {
+        try {
+          await this._speakBrowser(text);
+        } catch {
+          await this._speakEdge(text);
+        }
+      } else {
+        await this._speakEdge(text);
+      }
+
+      this._stopTts();
+      if (this.active) {
+        this.vadEnabled = true;
+        this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
+        this._startListening();
+      }
+    }
+
+    _speakBrowser(text) {
+      return new Promise((resolve, reject) => {
+        try {
+          global.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = "en-US";
+          u.rate = 1.05;
+          const voices = global.speechSynthesis.getVoices();
+          const en = voices.find((v) => v.lang?.startsWith("en") && /female|aria|jenny|samantha|google us/i.test(v.name))
+            || voices.find((v) => v.lang?.startsWith("en"));
+          if (en) u.voice = en;
+          this.utterance = u;
+          u.onend = () => {
+            this.utterance = null;
+            resolve();
+          };
+          u.onerror = () => {
+            this.utterance = null;
+            reject(new Error("speechSynthesis failed"));
+          };
+          // Chrome sometimes needs voices loaded
+          if (!voices.length) {
+            global.speechSynthesis.onvoiceschanged = () => {
+              const later = global.speechSynthesis.getVoices();
+              const pick = later.find((v) => v.lang?.startsWith("en")) || null;
+              if (pick) u.voice = pick;
+              global.speechSynthesis.speak(u);
+            };
+          } else {
+            global.speechSynthesis.speak(u);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
+
+    async _speakEdge(text) {
       try {
         const res = await fetch("/tts", {
           method: "POST",
@@ -447,16 +649,13 @@
       } catch {
         /* fall through */
       }
-
-      this._stopTts();
-      if (this.active) {
-        this.vadEnabled = true;
-        this._setState(STATES.LISTENING, "Listening…", "Say something — Ezric is listening");
-        this._startRecorder();
-      }
     }
 
     _stopTts() {
+      if (this.utterance) {
+        try { global.speechSynthesis.cancel(); } catch { /* ignore */ }
+        this.utterance = null;
+      }
       if (this.ttsAudio) {
         try {
           this.ttsAudio.pause();

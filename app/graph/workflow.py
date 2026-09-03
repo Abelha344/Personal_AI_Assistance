@@ -22,7 +22,11 @@ def retrieve_context(state: AgentState) -> AgentState:
 
 
 def generate(state: AgentState) -> AgentState:
-    response = generate_response(state["query"], state["context"])
+    response = generate_response(
+        state["query"],
+        state["context"],
+        voice_mode=bool(state.get("voice_mode")),
+    )
     return {**state, "response": response}
 
 
