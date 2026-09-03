@@ -113,13 +113,13 @@ def chat(request: ChatRequest) -> ChatResponse:
     except Exception as exc:
         detail = str(exc)
         if "API key" in detail:
-            detail = "Gemini API key is invalid. Update GOOGLE_API_KEY in .env."
+            detail = "Ezric can't connect right now — API key issue. Please try again later."
         elif "NOT_FOUND" in detail or "no longer available" in detail:
-            detail = "Gemini model not available. Check GEMINI_MODEL in .env."
+            detail = "Ezric is temporarily unavailable. Please try again shortly."
         elif "UNAVAILABLE" in detail or "high demand" in detail or "503" in detail:
-            detail = "Gemini is busy right now. Please try again in a few seconds."
+            detail = "Ezric is busy right now. Please try again in a few seconds."
         else:
-            detail = "Something went wrong talking to Gemini. Please try again."
+            detail = "Ezric ran into an issue. Please try again."
         raise HTTPException(status_code=502, detail=detail) from exc
     return ChatResponse(query=request.message, response=result["response"])
 
@@ -159,7 +159,7 @@ async def voice_chat(
             {"query": query, "context": "", "response": "", "voice_mode": True}
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Ezric failed to answer: {exc}") from exc
+        raise HTTPException(status_code=502, detail="Ezric ran into an issue. Please try again.") from exc
 
     response_text = result["response"]
 

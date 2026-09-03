@@ -68,7 +68,7 @@ User question:
     last_error: Exception | None = None
 
     for model in _candidate_models():
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 response = _client.models.generate_content(
                     model=model,
@@ -81,19 +81,19 @@ User question:
                 text = getattr(response, "text", None)
                 if text:
                     return text
-                raise RuntimeError("Empty response from Gemini")
+                raise RuntimeError("Empty response")
             except genai_errors.ClientError as exc:
                 last_error = exc
                 message = str(exc)
                 if "NOT_FOUND" in message or "no longer available" in message:
                     break
                 if "UNAVAILABLE" in message or "high demand" in message or "503" in message:
-                    time.sleep(0.6 * (attempt + 1))
+                    time.sleep(1.0 * (attempt + 1))
                     continue
                 raise
             except Exception as exc:
                 last_error = exc
-                time.sleep(0.4)
+                time.sleep(0.8 * (attempt + 1))
 
     if last_error:
         raise last_error
